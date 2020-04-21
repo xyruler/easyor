@@ -1,0 +1,326 @@
+#!/usr/bin/env lua
+--打印输出
+local console = function(...)
+	print('' .. unpack({...}))
+end
+
+--项目名称
+local myorname = 'easyor'
+--默认操作
+local action = 'help'
+
+--获取命令行输入参数
+--myor [action] <project> <argument...>
+--<argument> == -ms service
+do 	--check arg
+	local i = 1
+	local nargs = {}
+	while arg[i] do
+		if arg[i]:sub(1,1) == '-' then
+			nargs[arg[i]:sub(2)] = arg[i + 1]
+			i = i + 1
+		else
+			if not nargs.action then
+				nargs.action = arg[i]
+			elseif not nargs.workpath then
+				nargs.workpath = arg[i]
+			end
+		end
+		i = i + 1
+	end
+	
+	arg[1] = nargs.action		--操作命令
+	arg[2] = nargs.workpath		--项目路径
+	arg[3] = nargs.tp			--nginx工作路径
+	arg[4] = nargs.lp			--日志路径
+	arg[5] = nargs.cp			--nginx配置保存路径
+	arg[6] = nargs.ll			--日志等级
+	arg[7] = nargs.ccp			--nginx优化配置
+	arg[8] = nargs.ms			--微服务框架内对象
+	
+	action = arg[1] or action
+end
+
+--获取当前脚本所在路径
+do 	--get myor path
+	local excute_cmd = function(cmd)
+		local t = io.popen(cmd)
+		local data = t:read("*all")
+		t:close()
+		return data
+	end
+
+	local find_last = function(s,pattern)
+		local rs = s:reverse()
+		local pos = rs:find(pattern)
+		if not pos then return #s end
+		return #s - pos + 1
+	end
+
+	local get_myor_path = function()
+		local orpath = arg[0]
+		local ls = excute_cmd('ls -l ' .. orpath)
+		local lnk = ls:find('->')
+		if lnk then
+			orpath = ls:sub(lnk + 1,find_last(ls,'/') - 1)
+			orpath = orpath:sub(orpath:find('/'), #orpath)
+		else
+			orpath = orpath:sub(1,find_last(orpath,'/') - 1)
+		end
+		
+		return orpath
+	end
+
+	local myorpath = get_myor_path()
+	--设置luapath环境
+	if myorpath then
+		package.cpath = package.cpath .. ';' .. myorpath .. "/?.so;"
+		package.path  = package.path .. ';' .. myorpath .. "/?.lua;"
+	end
+end
+
+--获取环境变量
+local env = require 'utils.env'
+--nginx config 模板
+local ngx_tpl = require 'utils.ngx_tpl'
+--配置整合
+local merge_conf = require 'utils.merge_conf'
+--默认配置
+local config = require 'utils.conf.default'
+
+--整理环境变量
+local myor = env.workpath .. '/' .. env.project
+env.tmppath = arg[3] or 'nginx'
+env.logpath = arg[4] or 'logs'
+env.confpath = arg[5] or 'conf'
+env.loglevel = arg[6] or 'info'
+env.upngxconf = arg[7]
+
+if env.tmppath:sub(1,1) ~= '/' then
+	env.tmppath = env.workpath .. '/' .. env.tmppath
+end
+if env.logpath:sub(1,1) ~= '/' then
+	env.logpath = env.tmppath .. '/' .. env.logpath
+end
+if env.confpath:sub(1,1) ~= '/' then
+	env.confpath = env.tmppath .. '/' .. env.confpath
+end
+
+--设置luapath环境
+package.path  = package.path .. env.workpath .. "/?.lua;" .. env.workpath .. "/?/init.lua;" 
+package.cpath  = package.cpath .. env.workpath .. "/?.so;" .. env.workpath .. "/?/init.so;" 
+package.path  = package.path .. env.myorlualib .. "/?.lua;" .. env.myorlualib .. "/?/init.lua;" 
+package.cpath  = package.cpath .. env.myorlualib .. "/?.so;" .. env.myorlualib .. "/?/init.so;" 
+package.path  = package.path .. env.orlualib .. "/?.lua;"
+package.cpath  = package.path .. env.orlualib .. "/?.so;"
+if env.upngxconf then
+	package.path  = env.upngxconf .. "/?.lua;" .. package.path 
+end
+
+--基本信息输出
+local log_base_info = function()
+	console('-----------------------------------------------------------------------')
+	console('PROJECTNAME = ' .. env.project)
+	console('WORKPATH    = ' .. env.workpath)
+	console('TMPPATH     = ' .. env.tmppath)
+	console('LOGPATH     = ' .. env.logpath)
+	console('CONFPATH    = ' .. env.confpath)
+	console('LOGLEVEL    = ' .. env.loglevel)
+	console('-----------------------------------------------------------------------')
+end
+
+log_base_info()
+
+--启动服务
+local start = function()
+	env.link(env.openresty,myor)
+	local start_cmd = myor .. ' -p ' .. env.tmppath .. ' -c ' .. env.confpath .. '/nginx_' .. env.project .. '.conf'
+	console('Start Service ' .. env.project .. ' ...')
+	env.excute(start_cmd)
+end
+
+--停止服务
+local stop = function()
+	local stop_cmd = myor .. ' -s stop -p ' .. env.tmppath .. ' -c ' .. env.confpath .. '/nginx_' .. env.project .. '.conf'
+	console('Stop Service ' .. env.project .. ' ...')
+	env.excute(stop_cmd)
+	
+	local rm_exe = 'test -f ' .. myor .. '&& rm ' .. myor
+	env.excute(rm_exe)
+end
+
+--重载服务
+local reload = function()
+	local reload_cmd = myor .. ' -s reload -p ' .. env.tmppath .. ' -c ' .. env.confpath .. '/nginx_' .. env.project .. '.conf'
+	console('Reload Service ' .. env.project .. ' ...')
+	env.excute(reload_cmd)
+end
+
+local _M = {}
+function _M.help()
+    local helpstr = [[
+Usage: myor [action] <project> <argument...>
+
+[action]
+  help:       show this message, then exit
+  version:    print the version of myor
+  create:     create a new project in the current directory
+  init:       initialize the local nginx.conf
+  start:      start the myor server
+  stop:       stop the myor server
+  restart:    restart the myor server
+  reload:     reload the myor server
+  doc:        show core api document
+
+<project>     the project path,default is current path if there is no value.
+
+<argument...>
+  -lp:        log path
+  -cp:        nginx config save path
+  -ccp:       myor config path
+  -tp:        tmp path
+  -ll:        log level
+  -ms:        ms project[controller|service|gate]
+]]
+
+	console(helpstr:gsub('myor',myorname))
+
+end
+
+_M.version = function()
+	local ver = 0.1
+	console('version : ' .. ver)
+end
+
+--创建开发项目
+_M.create = function()
+	
+	local app_lua_path = env.myorpath .. '/utils/conf/app.lua'
+	local config_lua_path = env.myorpath .. '/utils/conf/config.lua'
+	
+	if arg[8] then	--ms框架
+		if arg[8] == 'controller' then	--ms框架中的controller节点
+			app_lua_path = env.myorpath .. '/utils/conf/ms/controller/app.lua'
+			config_lua_path = env.myorpath .. '/utils/conf/ms/controller/config.lua'
+		elseif arg[8] == 'service' then	--ms框架中的service节点
+			env.check_path_and_mkdir(env.workpath .. '/api')
+			env.check_path_and_mkdir(env.workpath .. '/data')
+			app_lua_path = env.myorpath .. '/utils/conf/ms/service/app.lua'
+			config_lua_path = env.myorpath .. '/utils/conf/ms/service/config.lua'
+		elseif arg[8] == 'gate' then	--ms框架中的gate节点
+			env.check_path_and_mkdir(env.workpath .. '/api')
+			env.check_path_and_mkdir(env.workpath .. '/data')
+			
+			app_lua_path = env.myorpath .. '/utils/conf/ms/gate/app.lua'
+			config_lua_path = env.myorpath .. '/utils/conf/ms/gate/config.lua'
+			
+			env.check_path_and_mkdir(env.workpath .. '/data/message')
+			if not env.exist(env.workpath .. '/data/message/head.lua') then
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/message/head.lua', env.workpath .. '/data/message')
+			end
+			if not env.exist(env.workpath .. '/data/message/make.lua') then
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/message/make.lua', env.workpath .. '/data/message')
+			end
+			if not env.exist(env.workpath .. '/data/message/parse.lua') then
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/message/parse.lua', env.workpath .. '/data/message')
+			end
+			
+			env.check_path_and_mkdir(env.workpath .. '/data/account')
+			if not env.exist(env.workpath .. '/data/account/find.lua') then
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/account/find.lua', env.workpath .. '/data/account')
+			end
+			if not env.exist(env.workpath .. '/data/account/token.lua') then
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/account/token.lua', env.workpath .. '/data/account')
+			end
+			
+			if not env.exist(env.workpath .. '/api/login.lua') then
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/api/login.lua', env.workpath .. '/api')
+				env.copy_file(env.myorpath .. '/utils/conf/ms/gate/api/login_in_other_service.lua', env.workpath .. '/api')
+			end
+		else
+			console('wrong ms params')
+			return
+		end
+	else
+		env.check_path_and_mkdir(env.workpath .. '/api')
+		env.check_path_and_mkdir(env.workpath .. '/data')
+		env.check_path_and_mkdir(env.workpath .. '/utils')
+	end
+	
+	if not env.exist(env.workpath .. '/app.lua') then
+		env.copy_file(app_lua_path, env.workpath)
+	end
+	
+	if not env.exist(env.workpath .. '/config.lua') then
+		env.copy_file(config_lua_path, env.workpath)
+	end
+	merge_conf()
+	_M.init()
+end
+
+--初始化nginx环境
+_M.init = function()
+	env.check_path_and_mkdir(env.tmppath)
+	env.check_path_and_mkdir(env.logpath)
+	env.check_path_and_mkdir(env.confpath)
+
+	
+	env.copy_file(env.myorpath .. '/utils/conf/mime.types', env.confpath)
+	local ngxconf = ngx_tpl.make(config)
+	local ok,err = env.write(env.confpath .. '/nginx_' .. env.project .. '.conf',ngxconf)
+	if not ok then 
+		console(err)
+	end
+end
+
+--启动服务
+_M.start = function()
+	if env.isrun then
+		console('The ' .. env.project .. ' service is running.')
+	else
+		start()
+	end
+end
+
+--停止服务
+_M.stop = function()
+	if not env.isrun then
+		console('The ' .. env.project .. ' service is not running.')
+	else
+		stop()
+	end
+end
+
+--重启服务
+_M.restart = function()
+	if env.isrun then
+		stop()
+	end
+	
+	start()
+end
+
+--重新加载脚本
+_M.reload = function()
+	if env.isrun then
+		reload()
+	else
+		start()
+	end
+end
+
+if not _M[action] then
+    print("invalid argument: ", action, "\n")
+else
+	if action ~= 'help' and action ~= 'version' and action ~= 'create' then
+		if not merge_conf() then
+			console('this is not a ' .. myorname .. ' project.')
+			return
+		end
+	end
+	
+	_M[action](arg[2])
+	if action ~= 'help' and action ~= 'version' then
+		console('Completed')
+	end
+end
